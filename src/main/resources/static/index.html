@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Spring Boot WebRTC Call Demo</title>
+    <style>
+        body {
+            text-align: center;
+            font-family: sans-serif;
+            background: #f7f7f7;
+        }
+        video {
+            width: 45%;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            margin: 5px;
+        }
+        #chatBox {
+            border: 1px solid #ccc;
+            width: 90%;
+            height: 150px;
+            margin: auto;
+            background: #fff;
+            overflow-y: auto;
+            text-align: left;
+            padding: 5px;
+        }
+        input, button {
+            padding: 5px;
+            margin: 3px;
+        }
+    </style>
+</head>
+<body>
+<h3>📞 WebRTC Video Call Demo</h3>
+
+<video id="localVideo" autoplay muted></video>
+<video id="remoteVideo" autoplay></video>
+<br>
+
+<p>🆔 Your ID: <span id="myId">loading...</span></p>
+<input id="toUser" placeholder="Enter target ID to call">
+<button onclick="startCall()">📲 Call</button>
+
+<h3>💬 Chat</h3>
+<div id="chatBox"></div>
+<br>
+<input id="chatMessage" placeholder="Nhập tin nhắn...">
+<button onclick="sendChat()">Gửi</button>
+
+<script>
+    let userId = null;
+    let pc;
+    let localStream;
+
+    // ✅ Kết nối WebSocket
+    const socket = new WebSocket("ws://localhost:8080/ws/call");
+
+    socket.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
+        console.log("📩 Received:", data);
+
+        switch (data.type) {
+            case "id-assigned":
+                userId = data.userId;
+                document.getElementById("myId").textContent = userId;
+                break;
+
+            case "offer":
+                await handleOffer(data);
+                break;
+
+            case "answer":
+                await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                break;
+
+            case "candidate":
+                if (data.candidate) {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+                break;
+
+            case "chat":
+                appendChat(`${data.from}: ${data.message}`);
+                break;
+        }
+    };
+
+    function sendMessage(msg) {
+        msg.from = userId;
+        socket.send(JSON.stringify(msg));
+    }
+
+    function appendChat(text) {
+        const box = document.getElementById("chatBox");
+        box.innerHTML += `<div>${text}</div>`;
+        box.scrollTop = box.scrollHeight;
+    }
+
+    function sendChat() {
+        const to = document.getElementById("toUser").value.trim();
+        const msgText = document.getElementById("chatMessage").value.trim();
+        if (!msgText || !to) return;
+
+        sendMessage({
+            type: "chat",
+            to: to,
+            message: msgText
+        });
+
+        appendChat(`Bạn: ${msgText}`);
+        document.getElementById("chatMessage").value = "";
+    }
+
+    async function initMedia() {
+        if (localStream) return;
+
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        } catch (err) {
+            alert("Không tìm thấy camera/micro hoặc chưa cấp quyền!");
+            console.error(err);
+            return;
+        }
+
+        document.getElementById("localVideo").srcObject = localStream;
+
+        pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        pc.ontrack = (e) => {
+            document.getElementById("remoteVideo").srcObject = e.streams[0];
+        };
+
+        pc.onicecandidate = (e) => {
+            if (e.candidate) {
+                sendMessage({
+                    type: "candidate",
+                    to: document.getElementById("toUser").value,
+                    candidate: e.candidate
+                });
+            }
+        };
+    }
+
+    async function startCall() {
+        const to = document.getElementById("toUser").value.trim();
+        if (!to) return alert("⚠️ Nhập ID người cần gọi!");
+
+        await initMedia();
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        sendMessage({
+            type: "offer",
+            to: to,
+            sdp: offer
+        });
+    }
+
+    async function handleOffer(data) {
+        await initMedia();
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sendMessage({
+            type: "answer",
+            to: data.from,
+            sdp: answer
+        });
+    }
+</script>
+</body>
+</html>
